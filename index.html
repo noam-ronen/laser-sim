@@ -45,6 +45,20 @@
     .modes { display: flex; gap: 6px; margin-bottom: 4px; }
     .modes button { margin-bottom: 0; }
     .hint { font-size: 11px; line-height: 1.5; opacity: 0.5; margin-top: 10px; }
+    .sect-label { font-size: 11px; opacity: 0.6; margin: 6px 0 4px; letter-spacing: 0.3px; text-transform: uppercase; }
+    .vec { display: flex; gap: 5px; margin-bottom: 6px; }
+    .vec input {
+      width: 100%; min-width: 0;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      color: #e8e8e8; font-size: 12px;
+      padding: 6px 4px; text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+    .vec input:focus { outline: none; border-color: rgba(80, 160, 255, 0.6); background: rgba(80, 160, 255, 0.12); }
+    .vec input::-webkit-inner-spin-button { opacity: 0.4; }
+    hr.sep { border: none; border-top: 1px solid rgba(255, 255, 255, 0.08); margin: 12px 0; }
   </style>
 </head>
 <body>
@@ -55,6 +69,7 @@
     <button id="addLaser">+ Add Laser Transmitter</button>
     <button id="addMirror">+ Add Mirror</button>
     <button id="addCube">+ Add Mirror Cube</button>
+    <button id="randomize">🎲 Randomize Scene</button>
     <div class="row">
       <label for="color">Active color</label>
       <input type="color" id="color" value="#ff2d55" />
@@ -62,11 +77,29 @@
     <div class="row">
       <label for="length">Laser length <span id="lengthVal">200</span></label>
     </div>
-    <input type="range" id="length" min="20" max="10000" step="10" value="200" style="width:100%; margin-bottom:8px;" />
+    <input type="range" id="length" min="20" max="100000" step="10" value="200" style="width:100%; margin-bottom:8px;" />
     <div class="row">
       <label for="glow">Beam glow <span id="glowVal">—</span></label>
     </div>
     <input type="range" id="glow" min="0" max="6" step="0.1" value="1.8" disabled style="width:100%; margin-bottom:8px;" />
+
+    <div id="transformPanel" style="display:none;">
+      <hr class="sep" />
+      <div class="sect-label">Position</div>
+      <div class="vec">
+        <input type="number" id="posX" step="0.01" title="X" />
+        <input type="number" id="posY" step="0.01" title="Y" />
+        <input type="number" id="posZ" step="0.01" title="Z" />
+      </div>
+      <div class="sect-label">Rotation (°)</div>
+      <div class="vec">
+        <input type="number" id="rotX" step="0.01" title="X" />
+        <input type="number" id="rotY" step="0.01" title="Y" />
+        <input type="number" id="rotZ" step="0.01" title="Z" />
+      </div>
+      <hr class="sep" />
+    </div>
+
     <div class="modes">
       <button id="modeTranslate" class="active">Move</button>
       <button id="modeRotate">Rotate</button>
@@ -367,11 +400,13 @@
       selected = mesh;
       transformControls.attach(mesh);
       syncGlowUI();
+      syncTransformUI();
     }
     function deselect() {
       selected = null;
       transformControls.detach();
       syncGlowUI();
+      syncTransformUI();
     }
 
     let downPos = null;
@@ -428,9 +463,42 @@
       }
     }
 
+    // --- Editable position / rotation boxes (fine numeric control) -----
+    const transformPanel = document.getElementById('transformPanel');
+    const posInputs = ['posX', 'posY', 'posZ'].map((id) => document.getElementById(id));
+    const rotInputs = ['rotX', 'rotY', 'rotZ'].map((id) => document.getElementById(id));
+    const RAD2DEG = 180 / Math.PI;
+    const DEG2RAD = Math.PI / 180;
+
+    // Push the selected object's transform into the boxes (2-decimal display).
+    function syncTransformUI() {
+      if (!selected) { transformPanel.style.display = 'none'; return; }
+      transformPanel.style.display = 'block';
+      const p = selected.position, r = selected.rotation;
+      // Don't clobber a box the user is actively editing.
+      const active = document.activeElement;
+      const set = (inp, val) => { if (inp !== active) inp.value = val.toFixed(2); };
+      set(posInputs[0], p.x); set(posInputs[1], p.y); set(posInputs[2], p.z);
+      set(rotInputs[0], r.x * RAD2DEG); set(rotInputs[1], r.y * RAD2DEG); set(rotInputs[2], r.z * RAD2DEG);
+    }
+
+    // Write the boxes back onto the selected object.
+    function applyTransformFromUI() {
+      if (!selected) return;
+      const num = (inp) => { const v = parseFloat(inp.value); return Number.isFinite(v) ? v : 0; };
+      selected.position.set(num(posInputs[0]), num(posInputs[1]), num(posInputs[2]));
+      selected.rotation.set(num(rotInputs[0]) * DEG2RAD, num(rotInputs[1]) * DEG2RAD, num(rotInputs[2]) * DEG2RAD);
+      selected.updateMatrixWorld(true); // keep the beam tracer in sync this frame
+    }
+
+    [...posInputs, ...rotInputs].forEach((inp) => inp.addEventListener('input', applyTransformFromUI));
+    // Live-update the boxes while the gizmo is dragged.
+    transformControls.addEventListener('objectChange', syncTransformUI);
+
     document.getElementById('addLaser').onclick = () => addEmitter(new THREE.Vector3(-8, 4, 0));
     document.getElementById('addMirror').onclick = () => addMirror(new THREE.Vector3(8, 5, 0));
     document.getElementById('addCube').onclick = () => addMirrorCube(new THREE.Vector3(0, 12, 0), 24);
+    document.getElementById('randomize').onclick = () => randomizeScene();
 
     const btnT = document.getElementById('modeTranslate');
     const btnR = document.getElementById('modeRotate');
@@ -469,7 +537,49 @@
       }
     }
 
+    // Remove every emitter and mirror (used before randomizing).
+    function clearScene() {
+      deselect();
+      for (const r of emitters) { scene.remove(r.mesh); scene.remove(r.beam); }
+      for (const r of mirrors) scene.remove(r.mesh);
+      emitters.length = 0;
+      mirrors.length = 0;
+      selectable.length = 0;
+    }
+
+    // Wipe the scene and scatter a random assortment: 1–5 lasers, 1–10 mirrors.
+    function randomizeScene() {
+      clearScene();
+      const rand = (a, b) => a + Math.random() * (b - a);
+      const TAU = Math.PI * 2;
+
+      const nMirrors = 1 + Math.floor(Math.random() * 10); // 1..10
+      for (let i = 0; i < nMirrors; i++) {
+        const s = rand(5, 10);
+        addMirror(new THREE.Vector3(rand(-22, 22), rand(3, 18), rand(-22, 22)), {
+          width: s, height: s,
+          rotation: new THREE.Euler(rand(0, TAU), rand(0, TAU), rand(0, TAU)),
+          select: false,
+        });
+      }
+
+      const nEmitters = 1 + Math.floor(Math.random() * 5); // 1..5
+      for (let i = 0; i < nEmitters; i++) {
+        const rec = addEmitter(new THREE.Vector3(rand(-18, 18), rand(3, 16), rand(-18, 18)));
+        // Random aim: full yaw, modest pitch so beams aren't all floor/ceiling.
+        rec.mesh.rotation.set(0, rand(0, TAU), rand(-Math.PI / 4, Math.PI / 4));
+        const c = new THREE.Color().setHSL(Math.random(), 0.9, 0.55);
+        rec.mesh.userData.color.copy(c);
+        rec.mesh.userData.muzzle.material.color.copy(c);
+        rec.mesh.userData.muzzle.material.emissive.copy(c);
+        rec.mesh.userData.glow = rand(1.2, 3.0);
+      }
+
+      deselect(); // start with nothing selected for a clean view
+    }
+
     window.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT') return; // don't hijack keys while editing a box
       if (e.key === 'w' || e.key === 'W') setMode('translate');
       if (e.key === 'e' || e.key === 'E') setMode('rotate');
       if (e.key === 'Delete' || e.key === 'Backspace') removeSelected();
