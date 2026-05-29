@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Laser Reflection Simulator — POC</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a1a; font-family: system-ui, sans-serif; }
+    #app { width: 100%; height: 100%; display: block; }
+
+    #panel {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      background: rgba(20, 20, 24, 0.82);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 14px;
+      color: #e8e8e8;
+      width: 220px;
+      user-select: none;
+    }
+    #panel h1 { font-size: 13px; font-weight: 600; letter-spacing: 0.4px; margin-bottom: 12px; opacity: 0.7; text-transform: uppercase; }
+    #panel button {
+      display: block;
+      width: 100%;
+      margin-bottom: 8px;
+      padding: 9px 12px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      color: #e8e8e8;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    #panel button:hover { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.2); }
+    #panel button.active { background: rgba(80, 160, 255, 0.25); border-color: rgba(80, 160, 255, 0.6); }
+    .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .row label { font-size: 12px; opacity: 0.75; flex: 1; }
+    input[type="color"] { width: 40px; height: 28px; border: none; border-radius: 6px; background: none; cursor: pointer; padding: 0; }
+    .modes { display: flex; gap: 6px; margin-bottom: 4px; }
+    .modes button { margin-bottom: 0; }
+    .hint { font-size: 11px; line-height: 1.5; opacity: 0.5; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <canvas id="app"></canvas>
+
+  <div id="panel">
+    <h1>Laser Sim</h1>
+    <button id="addLaser">+ Add Laser Transmitter</button>
+    <button id="addMirror">+ Add Mirror</button>
+    <button id="addCube">+ Add Mirror Cube</button>
+    <div class="row">
+      <label for="color">Active color</label>
+      <input type="color" id="color" value="#ff2d55" />
+    </div>
+    <div class="row">
+      <label for="length">Laser length <span id="lengthVal">200</span></label>
+    </div>
+    <input type="range" id="length" min="20" max="10000" step="10" value="200" style="width:100%; margin-bottom:8px;" />
+    <div class="row">
+      <label for="glow">Beam glow <span id="glowVal">—</span></label>
+    </div>
+    <input type="range" id="glow" min="0" max="6" step="0.1" value="1.8" disabled style="width:100%; margin-bottom:8px;" />
+    <div class="modes">
+      <button id="modeTranslate" class="active">Move</button>
+      <button id="modeRotate">Rotate</button>
+    </div>
+    <button id="deleteSel">Delete selected</button>
+    <div class="hint">
+      Click an object to select it.<br />
+      W = move · E = rotate · Del = remove.<br />
+      Drag empty space to orbit.
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { TransformControls } from 'three/addons/controls/TransformControls.js';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+    // ---------------------------------------------------------------------
+    // Phase 1: Environment & Scene Setup
+    // ---------------------------------------------------------------------
+    const canvas = document.getElementById('app');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x2c2c34, 0.012);
+    scene.background = new THREE.Color(0x2c2c34);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(18, 14, 24);
+
+    // Soft, non-directional ambient light — clean mirror frames, no harsh shadows.
+    scene.add(new THREE.AmbientLight(0xffffff, 1.6));
+    const fill = new THREE.HemisphereLight(0xaaccff, 0x444450, 1.1);
+    scene.add(fill);
+
+    // Matte ground plane to anchor the liminal space.
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(400, 400),
+      new THREE.MeshStandardMaterial({ color: 0x44444c, roughness: 1.0, metalness: 0.0 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.01;
+    scene.add(ground);
+
+    const orbit = new OrbitControls(camera, renderer.domElement);
+    orbit.enableDamping = true;
+    orbit.target.set(0, 4, 0);
+
+    // ---------------------------------------------------------------------
+    // Phase 5: Post-processing (bloom) — set up early, used in render loop.
+    // ---------------------------------------------------------------------
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      1.3,  // strength
+      0.8,  // radius (wider blur = smoother, less dotted glow)
+      0.6   // threshold
+    );
+    composer.addPass(bloomPass);
+
+    // ---------------------------------------------------------------------
+    // Logical scene state (Section 1.1)
+    // ---------------------------------------------------------------------
+    let nextId = 1;
+    const emitters = [];   // { id, mesh, beam }
+    const mirrors = [];    // { id, mesh }
+    const selectable = []; // meshes the raycaster can hit
+
+    let activeColor = new THREE.Color(0xff2d55);
+    let MAX_LENGTH = 200;       // max propagation length (slider-controlled)
+    const MAX_BOUNCES = 10000;    // 100+ reflections per beam
+    const BEAM_INTENSITY = 1.8; // gently overdrive vertex colors to feed bloom
+
+    // --- Emitter -------------------------------------------------------
+    function addEmitter(position) {
+      const id = nextId++;
+      const group = new THREE.Group();
+      group.position.copy(position);
+
+      // Body points along +X in local space; we read world +X as the beam dir.
+      const body = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.5, 0.5, 2.4, 24),
+        new THREE.MeshStandardMaterial({ color: 0x444450, roughness: 0.6, metalness: 0.3 })
+      );
+      body.rotation.z = -Math.PI / 2; // lay the cylinder along X
+      const emitColor = activeColor.clone();
+      const muzzle = new THREE.Mesh(
+        new THREE.SphereGeometry(0.45, 20, 20),
+        new THREE.MeshStandardMaterial({ color: emitColor, emissive: emitColor, emissiveIntensity: 2.5 })
+      );
+      muzzle.position.x = 1.3;
+      group.add(body, muzzle);
+
+      group.userData = { kind: 'emitter', id, color: emitColor.clone(), muzzle, glow: BEAM_INTENSITY };
+      scene.add(group);
+
+      // Beam: a Line whose vertices we rewrite every frame. Vertex colors
+      // carry the per-segment opacity (alpha) from distance falloff.
+      const beamGeom = new THREE.BufferGeometry();
+      const maxVerts = (MAX_BOUNCES + 2) * 2;
+      beamGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxVerts * 3), 3));
+      beamGeom.setAttribute('color', new THREE.BufferAttribute(new Float32Array(maxVerts * 3), 3));
+      const beamMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+      const beam = new THREE.LineSegments(beamGeom, beamMat);
+      beam.frustumCulled = false;
+      scene.add(beam);
+
+      const rec = { id, mesh: group, beam };
+      emitters.push(rec);
+      selectable.push(group);
+      select(group);
+      return rec;
+    }
+
+    // --- Mirror --------------------------------------------------------
+    function addMirror(position, opts = {}) {
+      const id = nextId++;
+      const width = opts.width ?? 8;
+      const height = opts.height ?? 8;
+      const group = new THREE.Group();
+      group.position.copy(position);
+      if (opts.rotation) group.rotation.copy(opts.rotation);
+
+      const glass = new THREE.Mesh(
+        new THREE.PlaneGeometry(width, height),
+        new THREE.MeshStandardMaterial({
+          color: 0xcfe2ff, roughness: 0.05, metalness: 1.0, side: THREE.DoubleSide,
+          emissive: 0x223a66, emissiveIntensity: 0.6
+        })
+      );
+      const frame = new THREE.Mesh(
+        new THREE.BoxGeometry(width + 0.8, height + 0.8, 0.4),
+        new THREE.MeshStandardMaterial({ color: 0x8a8aa0, roughness: 0.4, metalness: 0.6 })
+      );
+      frame.position.z = -0.3;  // front face at -0.1, behind the glass
+      glass.position.z = 0.05;  // float the glass clear of the frame to avoid z-fighting
+      group.add(frame, glass);
+
+      group.userData = { kind: 'mirror', id, width, height };
+      group.updateMatrixWorld(true); // ensure matrixWorld is current for the tracer
+      scene.add(group);
+
+      const rec = { id, mesh: group };
+      mirrors.push(rec);
+      selectable.push(group);
+      if (opts.select !== false) select(group);
+      return rec;
+    }
+
+    // Build a closed cube of 6 inward-facing mirror walls, centered at `center`.
+    function addMirrorCube(center, size = 24) {
+      const h = size / 2;
+      const wall = { width: size, height: size, select: false };
+      const E = THREE.Euler;
+      // Each wall sits on a face; the reflection formula is sign-agnostic so
+      // only the plane orientation matters, not which way the normal points.
+      addMirror(new THREE.Vector3(center.x + h, center.y, center.z), { ...wall, rotation: new E(0,  Math.PI / 2, 0) }); // +X
+      addMirror(new THREE.Vector3(center.x - h, center.y, center.z), { ...wall, rotation: new E(0, -Math.PI / 2, 0) }); // -X
+      addMirror(new THREE.Vector3(center.x, center.y + h, center.z), { ...wall, rotation: new E(-Math.PI / 2, 0, 0) }); // +Y
+      addMirror(new THREE.Vector3(center.x, center.y - h, center.z), { ...wall, rotation: new E( Math.PI / 2, 0, 0) }); // -Y
+      addMirror(new THREE.Vector3(center.x, center.y, center.z + h), { ...wall, rotation: new E(0, 0, 0) });            // +Z
+      addMirror(new THREE.Vector3(center.x, center.y, center.z - h), { ...wall, rotation: new E(0, Math.PI, 0) });      // -Z
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 4: Physics — iterative ray/mirror reflection (CPU).
+    // Computes the polyline a beam traces over up to MAX_BOUNCES mirrors.
+    // ---------------------------------------------------------------------
+    const _v = new THREE.Vector3();
+    const _planeNormal = new THREE.Vector3();
+    const _planeOrigin = new THREE.Vector3();
+    const _localHit = new THREE.Vector3();
+    const _invMat = new THREE.Matrix4();
+    const EPS = 1e-4;
+
+    function traceBeam(origin, dir) {
+      const pts = [origin.clone()];
+      let rayO = origin.clone();
+      let rayD = dir.clone().normalize();
+      let remaining = MAX_LENGTH;
+
+      for (let bounce = 0; bounce < MAX_BOUNCES && remaining > EPS; bounce++) {
+        let best = null;
+
+        for (const m of mirrors) {
+          const mesh = m.mesh;
+          // Mirror normal = world +Z of its group; origin = its world position.
+          _planeNormal.set(0, 0, 1).applyQuaternion(mesh.quaternion).normalize();
+          mesh.getWorldPosition(_planeOrigin);
+
+          const denom = rayD.dot(_planeNormal);
+          if (Math.abs(denom) < EPS) continue; // parallel
+
+          // t = dot(planeOrigin - rayOrigin, N) / dot(rayDir, N)
+          const t = _v.copy(_planeOrigin).sub(rayO).dot(_planeNormal) / denom;
+          if (t <= EPS || t > remaining) continue;
+
+          // Hit point, then check it falls inside the finite mirror bounds.
+          _localHit.copy(rayD).multiplyScalar(t).add(rayO);
+          _invMat.copy(mesh.matrixWorld).invert();
+          _localHit.applyMatrix4(_invMat);
+          const hw = m.mesh.userData.width / 2, hh = m.mesh.userData.height / 2;
+          if (Math.abs(_localHit.x) > hw || Math.abs(_localHit.y) > hh) continue;
+
+          if (!best || t < best.t) {
+            best = { t, normal: _planeNormal.clone() };
+          }
+        }
+
+        if (!best) {
+          // No more hits: shoot the rest of the budget into the void.
+          pts.push(rayO.clone().addScaledVector(rayD, remaining));
+          break;
+        }
+
+        const hit = rayO.clone().addScaledVector(rayD, best.t);
+        pts.push(hit);
+        remaining -= best.t;
+
+        // R_out = R_in - 2 (R_in . N) N
+        rayD = rayD.clone().sub(best.normal.clone().multiplyScalar(2 * rayD.dot(best.normal))).normalize();
+        rayO = hit.clone().addScaledVector(rayD, EPS); // nudge off surface
+      }
+
+      return pts;
+    }
+
+    // Rebuild a beam's line segments + per-vertex alpha (distance falloff).
+    const _origin = new THREE.Vector3();
+    const _dir = new THREE.Vector3();
+    function updateBeam(rec) {
+      const group = rec.mesh;
+      group.getWorldPosition(_origin);
+      _dir.set(1, 0, 0).applyQuaternion(group.quaternion).normalize(); // local +X
+      _origin.addScaledVector(_dir, 1.4); // start at the muzzle
+
+      const pts = traceBeam(_origin, _dir);
+      const color = group.userData.color;
+      const glow = group.userData.glow;
+
+      const posAttr = rec.beam.geometry.getAttribute('position');
+      const colAttr = rec.beam.geometry.getAttribute('color');
+      const posArr = posAttr.array;
+      const colArr = colAttr.array;
+
+      let vi = 0;       // vertex index
+      let dist = 0;     // accumulated distance for opacity
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const segLen = a.distanceTo(b);
+        const aFade = (1.0 - Math.min(dist / MAX_LENGTH, 1.0)) * glow;
+        const bFade = (1.0 - Math.min((dist + segLen) / MAX_LENGTH, 1.0)) * glow;
+        dist += segLen;
+
+        // Two vertices per segment (LineSegments). Brightness (>1.0) folded into
+        // color via additive blending so the line over-drives the bloom pass.
+        posArr[vi * 3] = a.x; posArr[vi * 3 + 1] = a.y; posArr[vi * 3 + 2] = a.z;
+        colArr[vi * 3] = color.r * aFade; colArr[vi * 3 + 1] = color.g * aFade; colArr[vi * 3 + 2] = color.b * aFade;
+        vi++;
+        posArr[vi * 3] = b.x; posArr[vi * 3 + 1] = b.y; posArr[vi * 3 + 2] = b.z;
+        colArr[vi * 3] = color.r * bFade; colArr[vi * 3 + 1] = color.g * bFade; colArr[vi * 3 + 2] = color.b * bFade;
+        vi++;
+      }
+
+      rec.beam.geometry.setDrawRange(0, vi);
+      posAttr.needsUpdate = true;
+      colAttr.needsUpdate = true;
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 2: Interaction — raycaster selection + TransformControls.
+    // ---------------------------------------------------------------------
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let selected = null;
+
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value; });
+    scene.add(transformControls);
+
+    function select(mesh) {
+      selected = mesh;
+      transformControls.attach(mesh);
+      syncGlowUI();
+    }
+    function deselect() {
+      selected = null;
+      transformControls.detach();
+      syncGlowUI();
+    }
+
+    let downPos = null;
+    renderer.domElement.addEventListener('pointerdown', (e) => { downPos = { x: e.clientX, y: e.clientY }; });
+    renderer.domElement.addEventListener('pointerup', (e) => {
+      if (!downPos) return;
+      const moved = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
+      downPos = null;
+      if (moved > 5) return;            // a drag (orbit), not a click
+      if (transformControls.dragging) return;
+
+      pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+      pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(selectable, true);
+      if (hits.length > 0) {
+        let obj = hits[0].object;
+        while (obj.parent && !obj.userData.kind) obj = obj.parent; // climb to the group
+        select(obj);
+      } else {
+        deselect();
+      }
+    });
+
+    // ---------------------------------------------------------------------
+    // UI wiring (Phase 2 / Phase 5 color binding)
+    // ---------------------------------------------------------------------
+    const colorInput = document.getElementById('color');
+
+    const lengthInput = document.getElementById('length');
+    const lengthVal = document.getElementById('lengthVal');
+    lengthInput.oninput = () => {
+      MAX_LENGTH = Number(lengthInput.value);
+      lengthVal.textContent = lengthInput.value;
+    };
+
+    // Per-transmitter beam glow: drives how hard that beam feeds the bloom pass.
+    const glowInput = document.getElementById('glow');
+    const glowVal = document.getElementById('glowVal');
+    glowInput.oninput = () => {
+      if (!selected || selected.userData.kind !== 'emitter') return;
+      selected.userData.glow = Number(glowInput.value);
+      glowVal.textContent = Number(glowInput.value).toFixed(1);
+    };
+    // Reflect the selected transmitter's glow in the slider (or disable it).
+    function syncGlowUI() {
+      if (selected && selected.userData.kind === 'emitter') {
+        glowInput.disabled = false;
+        glowInput.value = selected.userData.glow;
+        glowVal.textContent = selected.userData.glow.toFixed(1);
+      } else {
+        glowInput.disabled = true;
+        glowVal.textContent = '—';
+      }
+    }
+
+    document.getElementById('addLaser').onclick = () => addEmitter(new THREE.Vector3(-8, 4, 0));
+    document.getElementById('addMirror').onclick = () => addMirror(new THREE.Vector3(8, 5, 0));
+    document.getElementById('addCube').onclick = () => addMirrorCube(new THREE.Vector3(0, 12, 0), 24);
+
+    const btnT = document.getElementById('modeTranslate');
+    const btnR = document.getElementById('modeRotate');
+    function setMode(mode) {
+      transformControls.setMode(mode);
+      btnT.classList.toggle('active', mode === 'translate');
+      btnR.classList.toggle('active', mode === 'rotate');
+    }
+    btnT.onclick = () => setMode('translate');
+    btnR.onclick = () => setMode('rotate');
+
+    colorInput.oninput = () => {
+      activeColor.set(colorInput.value);
+      // Live re-bind: recolor the selected emitter if one is active.
+      if (selected && selected.userData.kind === 'emitter') {
+        selected.userData.color.set(colorInput.value);
+        selected.userData.muzzle.material.color.set(colorInput.value);
+        selected.userData.muzzle.material.emissive.set(colorInput.value);
+      }
+    };
+
+    document.getElementById('deleteSel').onclick = () => removeSelected();
+    function removeSelected() {
+      if (!selected) return;
+      const target = selected;
+      deselect();
+      const si = selectable.indexOf(target);
+      if (si >= 0) selectable.splice(si, 1);
+      scene.remove(target);
+      if (target.userData.kind === 'emitter') {
+        const idx = emitters.findIndex((r) => r.mesh === target);
+        if (idx >= 0) { scene.remove(emitters[idx].beam); emitters.splice(idx, 1); }
+      } else if (target.userData.kind === 'mirror') {
+        const idx = mirrors.findIndex((r) => r.mesh === target);
+        if (idx >= 0) mirrors.splice(idx, 1);
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'w' || e.key === 'W') setMode('translate');
+      if (e.key === 'e' || e.key === 'E') setMode('rotate');
+      if (e.key === 'Delete' || e.key === 'Backspace') removeSelected();
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ---------------------------------------------------------------------
+    // Render loop
+    // ---------------------------------------------------------------------
+    function animate() {
+      requestAnimationFrame(animate);
+      orbit.update();
+      for (const rec of emitters) updateBeam(rec);
+      composer.render();
+    }
+
+    // A small starting scene so the POC shows something immediately.
+    addEmitter(new THREE.Vector3(-12, 4, 0));
+    const m1 = addMirror(new THREE.Vector3(12, 5, 0));
+    m1.mesh.rotation.y = -Math.PI / 4;
+    const m2 = addMirror(new THREE.Vector3(0, 5, 12));
+    m2.mesh.rotation.y = Math.PI / 4;
+    deselect();
+
+    animate();
+  </script>
+</body>
+</html>
