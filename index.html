@@ -23,7 +23,17 @@
       width: 220px;
       user-select: none;
     }
-    #panel h1 { font-size: 13px; font-weight: 600; letter-spacing: 0.4px; margin-bottom: 12px; opacity: 0.7; text-transform: uppercase; }
+    #panel h1 {
+      font-size: 13px; font-weight: 600; letter-spacing: 0.4px; margin-bottom: 12px;
+      opacity: 0.7; text-transform: uppercase;
+      display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer; gap: 8px;
+    }
+    #panel h1 .chevron { transition: transform 0.2s; font-size: 11px; opacity: 0.8; }
+    #panel.collapsed { width: auto; }
+    #panel.collapsed h1 { margin-bottom: 0; }
+    #panel.collapsed h1 .chevron { transform: rotate(-90deg); }
+    #panel.collapsed #panelBody { display: none; }
     #panel button {
       display: block;
       width: 100%;
@@ -65,7 +75,8 @@
   <canvas id="app"></canvas>
 
   <div id="panel">
-    <h1>Laser Sim</h1>
+    <h1 id="panelToggle"><span>Laser Sim</span><span class="chevron">▼</span></h1>
+    <div id="panelBody">
     <button id="addLaser">+ Add Laser Transmitter</button>
     <button id="addMirror">+ Add Mirror</button>
     <button id="addCube">+ Add Mirror Cube</button>
@@ -109,6 +120,7 @@
       Click an object to select it.<br />
       W = move · E = rotate · Del = remove.<br />
       Drag empty space to orbit.
+    </div>
     </div>
   </div>
 
@@ -499,6 +511,11 @@
     document.getElementById('addMirror').onclick = () => addMirror(new THREE.Vector3(8, 5, 0));
     document.getElementById('addCube').onclick = () => addMirrorCube(new THREE.Vector3(0, 12, 0), 24);
     document.getElementById('randomize').onclick = () => randomizeScene();
+
+    // Collapsible panel (tap the title) — collapse by default on small screens.
+    const panel = document.getElementById('panel');
+    document.getElementById('panelToggle').onclick = () => panel.classList.toggle('collapsed');
+    if (window.matchMedia('(max-width: 640px)').matches) panel.classList.add('collapsed');
 
     const btnT = document.getElementById('modeTranslate');
     const btnR = document.getElementById('modeRotate');
