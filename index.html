@@ -111,17 +111,25 @@
         <input type="number" id="rotY" step="0.01" title="Y" />
         <input type="number" id="rotZ" step="0.01" title="Z" />
       </div>
+      <div id="sizeSection">
+        <div class="sect-label">Size (W × H)</div>
+        <div class="vec">
+          <input type="number" id="sizeW" step="0.1" min="0.1" title="Width" />
+          <input type="number" id="sizeH" step="0.1" min="0.1" title="Height" />
+        </div>
+      </div>
       <hr class="sep" />
     </div>
 
     <div class="modes">
       <button id="modeTranslate" class="active">Move</button>
       <button id="modeRotate">Rotate</button>
+      <button id="modeScale">Scale</button>
     </div>
     <button id="deleteSel">Delete selected</button>
     <div class="hint">
       Click an object to select it.<br />
-      W = move · E = rotate · Del = remove.<br />
+      W = move · E = rotate · R = scale · Del = remove.<br />
       Drag empty space to orbit.
     </div>
     </div>
@@ -416,12 +424,14 @@
       transformControls.attach(mesh);
       syncGlowUI();
       syncTransformUI();
+      updateScaleAvailability();
     }
     function deselect() {
       selected = null;
       transformControls.detach();
       syncGlowUI();
       syncTransformUI();
+      updateScaleAvailability();
     }
 
     let downPos = null;
@@ -480,8 +490,10 @@
 
     // --- Editable position / rotation boxes (fine numeric control) -----
     const transformPanel = document.getElementById('transformPanel');
+    const sizeSection = document.getElementById('sizeSection');
     const posInputs = ['posX', 'posY', 'posZ'].map((id) => document.getElementById(id));
     const rotInputs = ['rotX', 'rotY', 'rotZ'].map((id) => document.getElementById(id));
+    const sizeInputs = ['sizeW', 'sizeH'].map((id) => document.getElementById(id));
     const RAD2DEG = 180 / Math.PI;
     const DEG2RAD = Math.PI / 180;
 
@@ -495,6 +507,15 @@
       const set = (inp, val) => { if (inp !== active) inp.value = val.toFixed(2); };
       set(posInputs[0], p.x); set(posInputs[1], p.y); set(posInputs[2], p.z);
       set(rotInputs[0], r.x * RAD2DEG); set(rotInputs[1], r.y * RAD2DEG); set(rotInputs[2], r.z * RAD2DEG);
+
+      // Size only applies to mirrors: effective size = base geometry × scale.
+      if (selected.userData.kind === 'mirror') {
+        sizeSection.style.display = 'block';
+        set(sizeInputs[0], selected.userData.width * selected.scale.x);
+        set(sizeInputs[1], selected.userData.height * selected.scale.y);
+      } else {
+        sizeSection.style.display = 'none';
+      }
     }
 
     // Write the boxes back onto the selected object.
@@ -506,7 +527,18 @@
       selected.updateMatrixWorld(true); // keep the beam tracer in sync this frame
     }
 
+    // Resize a mirror by mapping requested size onto the group's scale.
+    function applySizeFromUI() {
+      if (!selected || selected.userData.kind !== 'mirror') return;
+      const w = Math.max(parseFloat(sizeInputs[0].value) || 0.1, 0.1);
+      const h = Math.max(parseFloat(sizeInputs[1].value) || 0.1, 0.1);
+      selected.scale.x = w / selected.userData.width;
+      selected.scale.y = h / selected.userData.height;
+      selected.updateMatrixWorld(true);
+    }
+
     [...posInputs, ...rotInputs].forEach((inp) => inp.addEventListener('input', applyTransformFromUI));
+    sizeInputs.forEach((inp) => inp.addEventListener('input', applySizeFromUI));
     // Live-update the boxes while the gizmo is dragged.
     transformControls.addEventListener('objectChange', syncTransformUI);
 
@@ -522,13 +554,27 @@
 
     const btnT = document.getElementById('modeTranslate');
     const btnR = document.getElementById('modeRotate');
+    const btnS = document.getElementById('modeScale');
     function setMode(mode) {
+      // Scale only makes sense for mirrors — emitters can't be resized.
+      if (mode === 'scale' && (!selected || selected.userData.kind !== 'mirror')) return;
       transformControls.setMode(mode);
       btnT.classList.toggle('active', mode === 'translate');
       btnR.classList.toggle('active', mode === 'rotate');
+      btnS.classList.toggle('active', mode === 'scale');
+    }
+
+    // Enable the Scale control only for mirrors; drop out of scale mode otherwise.
+    function updateScaleAvailability() {
+      const isMirror = selected && selected.userData.kind === 'mirror';
+      btnS.disabled = !isMirror;
+      btnS.style.opacity = isMirror ? '' : '0.4';
+      btnS.style.cursor = isMirror ? '' : 'not-allowed';
+      if (!isMirror && transformControls.getMode() === 'scale') setMode('translate');
     }
     btnT.onclick = () => setMode('translate');
     btnR.onclick = () => setMode('rotate');
+    btnS.onclick = () => setMode('scale');
 
     colorInput.oninput = () => {
       activeColor.set(colorInput.value);
@@ -614,8 +660,9 @@
         mirrors: mirrors.map((r) => ({
           position: r.mesh.position.toArray(),
           rotation: [r.mesh.rotation.x, r.mesh.rotation.y, r.mesh.rotation.z],
-          width: r.mesh.userData.width,
-          height: r.mesh.userData.height,
+          // Effective size = base geometry × current scale, so resizes round-trip.
+          width: r.mesh.userData.width * r.mesh.scale.x,
+          height: r.mesh.userData.height * r.mesh.scale.y,
         })),
       };
     }
@@ -687,6 +734,7 @@
       if (e.target.tagName === 'INPUT') return; // don't hijack keys while editing a box
       if (e.key === 'w' || e.key === 'W') setMode('translate');
       if (e.key === 'e' || e.key === 'E') setMode('rotate');
+      if (e.key === 'r' || e.key === 'R') setMode('scale');
       if (e.key === 'Delete' || e.key === 'Backspace') removeSelected();
     });
 
