@@ -81,6 +81,9 @@
     <button id="addMirror">+ Add Mirror</button>
     <button id="addCube">+ Add Mirror Cube</button>
     <button id="randomize">🎲 Randomize Scene</button>
+    <button id="saveScene">💾 Save Scene</button>
+    <button id="loadScene">📂 Load Scene</button>
+    <input type="file" id="loadFile" accept="application/json,.json" style="display:none" />
     <div class="row">
       <label for="color">Active color</label>
       <input type="color" id="color" value="#ff2d55" />
@@ -594,6 +597,91 @@
 
       deselect(); // start with nothing selected for a clean view
     }
+
+    // --- Save / Load --------------------------------------------------
+    // Serialize the whole scene (emitters, mirrors, laser length) to a plain object.
+    function serializeScene() {
+      return {
+        type: 'laser-sim-scene',
+        version: 1,
+        length: MAX_LENGTH,
+        emitters: emitters.map((r) => ({
+          position: r.mesh.position.toArray(),
+          rotation: [r.mesh.rotation.x, r.mesh.rotation.y, r.mesh.rotation.z],
+          color: '#' + r.mesh.userData.color.getHexString(),
+          glow: r.mesh.userData.glow,
+        })),
+        mirrors: mirrors.map((r) => ({
+          position: r.mesh.position.toArray(),
+          rotation: [r.mesh.rotation.x, r.mesh.rotation.y, r.mesh.rotation.z],
+          width: r.mesh.userData.width,
+          height: r.mesh.userData.height,
+        })),
+      };
+    }
+
+    function saveScene() {
+      const json = JSON.stringify(serializeScene(), null, 2);
+      const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'laser-scene.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Rebuild the scene from a serialized object (replaces current contents).
+    function loadScene(data) {
+      if (!data || (!data.emitters && !data.mirrors)) {
+        throw new Error('not a valid laser-sim scene');
+      }
+      clearScene();
+
+      if (typeof data.length === 'number') {
+        MAX_LENGTH = data.length;
+        lengthInput.value = data.length;
+        lengthVal.textContent = data.length;
+      }
+
+      for (const m of data.mirrors || []) {
+        addMirror(new THREE.Vector3().fromArray(m.position || [0, 0, 0]), {
+          width: m.width ?? 8,
+          height: m.height ?? 8,
+          rotation: new THREE.Euler().fromArray(m.rotation || [0, 0, 0]),
+          select: false,
+        });
+      }
+
+      for (const e of data.emitters || []) {
+        const rec = addEmitter(new THREE.Vector3().fromArray(e.position || [0, 0, 0]));
+        rec.mesh.rotation.fromArray(e.rotation || [0, 0, 0]);
+        const c = new THREE.Color(e.color || '#ffffff');
+        rec.mesh.userData.color.copy(c);
+        rec.mesh.userData.muzzle.material.color.copy(c);
+        rec.mesh.userData.muzzle.material.emissive.copy(c);
+        if (typeof e.glow === 'number') rec.mesh.userData.glow = e.glow;
+      }
+
+      deselect();
+    }
+
+    document.getElementById('saveScene').onclick = saveScene;
+    const loadFile = document.getElementById('loadFile');
+    document.getElementById('loadScene').onclick = () => loadFile.click();
+    loadFile.onchange = (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          loadScene(JSON.parse(reader.result));
+        } catch (err) {
+          alert('Could not load scene: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+      loadFile.value = ''; // let the same file be re-selected later
+    };
 
     window.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT') return; // don't hijack keys while editing a box
