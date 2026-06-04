@@ -84,6 +84,10 @@
     <button id="saveScene">💾 Save Scene</button>
     <button id="loadScene">📂 Load Scene</button>
     <input type="file" id="loadFile" accept="application/json,.json" style="display:none" />
+    <div class="modes" style="margin-bottom:8px">
+      <button id="btnUndo" disabled>↩ Undo</button>
+      <button id="btnRedo" disabled>↪ Redo</button>
+    </div>
     <div class="row">
       <label for="color">Active color</label>
       <input type="color" id="color" value="#ff2d55" />
@@ -127,10 +131,17 @@
       <button id="modeScale">Scale</button>
     </div>
     <button id="deleteSel">Delete selected</button>
+    <div class="sect-label">Camera</div>
+    <div class="modes" style="margin-bottom:8px">
+      <button id="camTop">Top</button>
+      <button id="camFront">Front</button>
+      <button id="camSide">Side</button>
+      <button id="cam3D">3D</button>
+    </div>
     <div class="hint">
       Click an object to select it.<br />
       W = move · E = rotate · R = scale · Del = remove.<br />
-      Drag empty space to orbit.
+      Drag empty space to orbit. Ctrl+Z/Y = undo/redo.
     </div>
     </div>
   </div>
@@ -416,7 +427,10 @@
     let selected = null;
 
     const transformControls = new TransformControls(camera, renderer.domElement);
-    transformControls.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value; });
+    transformControls.addEventListener('dragging-changed', (e) => {
+      orbit.enabled = !e.value;
+      if (e.value) pushUndo();
+    });
     scene.add(transformControls);
 
     function select(mesh) {
@@ -541,11 +555,23 @@
     sizeInputs.forEach((inp) => inp.addEventListener('input', applySizeFromUI));
     // Live-update the boxes while the gizmo is dragged.
     transformControls.addEventListener('objectChange', syncTransformUI);
+    // Push a single undo snapshot when the user starts editing numeric fields.
+    // The blur timer lets focus move between sibling inputs without a double-push.
+    let _transformEditStarted = false, _transformBlurTimer = null;
+    [...posInputs, ...rotInputs, ...sizeInputs].forEach((inp) => {
+      inp.addEventListener('focus', () => {
+        clearTimeout(_transformBlurTimer);
+        if (!_transformEditStarted) { pushUndo(); _transformEditStarted = true; }
+      });
+      inp.addEventListener('blur', () => {
+        _transformBlurTimer = setTimeout(() => { _transformEditStarted = false; }, 50);
+      });
+    });
 
-    document.getElementById('addLaser').onclick = () => addEmitter(new THREE.Vector3(-8, 4, 0));
-    document.getElementById('addMirror').onclick = () => addMirror(new THREE.Vector3(8, 5, 0));
-    document.getElementById('addCube').onclick = () => addMirrorCube(new THREE.Vector3(0, 12, 0), 24);
-    document.getElementById('randomize').onclick = () => randomizeScene();
+    document.getElementById('addLaser').onclick = () => { pushUndo(); addEmitter(new THREE.Vector3(-8, 4, 0)); };
+    document.getElementById('addMirror').onclick = () => { pushUndo(); addMirror(new THREE.Vector3(8, 5, 0)); };
+    document.getElementById('addCube').onclick = () => { pushUndo(); addMirrorCube(new THREE.Vector3(0, 12, 0), 24); };
+    document.getElementById('randomize').onclick = () => { pushUndo(); randomizeScene(); };
 
     // Collapsible panel (tap the title) — collapse by default on small screens.
     const panel = document.getElementById('panel');
@@ -586,7 +612,7 @@
       }
     };
 
-    document.getElementById('deleteSel').onclick = () => removeSelected();
+    document.getElementById('deleteSel').onclick = () => { pushUndo(); removeSelected(); };
     function removeSelected() {
       if (!selected) return;
       const target = selected;
@@ -721,6 +747,7 @@
       const reader = new FileReader();
       reader.onload = () => {
         try {
+          pushUndo();
           loadScene(JSON.parse(reader.result));
         } catch (err) {
           alert('Could not load scene: ' + err.message);
@@ -730,12 +757,59 @@
       loadFile.value = ''; // let the same file be re-selected later
     };
 
+    // --- Undo / Redo --------------------------------------------------
+    const undoStack = [];
+    const redoStack = [];
+
+    function pushUndo() {
+      undoStack.push(serializeScene());
+      if (undoStack.length > 100) undoStack.shift();
+      redoStack.length = 0;
+      updateHistoryUI();
+    }
+    function undo() {
+      if (!undoStack.length) return;
+      redoStack.push(serializeScene());
+      loadScene(undoStack.pop());
+      updateHistoryUI();
+    }
+    function redo() {
+      if (!redoStack.length) return;
+      undoStack.push(serializeScene());
+      loadScene(redoStack.pop());
+      updateHistoryUI();
+    }
+    function updateHistoryUI() {
+      document.getElementById('btnUndo').disabled = !undoStack.length;
+      document.getElementById('btnRedo').disabled = !redoStack.length;
+    }
+    document.getElementById('btnUndo').onclick = undo;
+    document.getElementById('btnRedo').onclick = redo;
+
+    // --- Camera presets -----------------------------------------------
+    let camAnim = null;
+    function flyTo(toPos, toTarget) {
+      camAnim = {
+        fromPos: camera.position.clone(),
+        fromTarget: orbit.target.clone(),
+        toPos: new THREE.Vector3(...toPos),
+        toTarget: new THREE.Vector3(...toTarget),
+        t: 0,
+      };
+    }
+    document.getElementById('camTop').onclick   = () => flyTo([0, 50, 0.01], [0, 0, 0]);
+    document.getElementById('camFront').onclick = () => flyTo([0, 8, 45], [0, 4, 0]);
+    document.getElementById('camSide').onclick  = () => flyTo([45, 8, 0], [0, 4, 0]);
+    document.getElementById('cam3D').onclick    = () => flyTo([18, 14, 24], [0, 4, 0]);
+
     window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
       if (e.target.tagName === 'INPUT') return; // don't hijack keys while editing a box
       if (e.key === 'w' || e.key === 'W') setMode('translate');
       if (e.key === 'e' || e.key === 'E') setMode('rotate');
       if (e.key === 'r' || e.key === 'R') setMode('scale');
-      if (e.key === 'Delete' || e.key === 'Backspace') removeSelected();
+      if (e.key === 'Delete' || e.key === 'Backspace') { pushUndo(); removeSelected(); }
     });
 
     window.addEventListener('resize', () => {
@@ -750,6 +824,13 @@
     // ---------------------------------------------------------------------
     function animate() {
       requestAnimationFrame(animate);
+      if (camAnim) {
+        camAnim.t = Math.min(camAnim.t + 0.04, 1);
+        const ease = 1 - Math.pow(1 - camAnim.t, 3);
+        camera.position.lerpVectors(camAnim.fromPos, camAnim.toPos, ease);
+        orbit.target.lerpVectors(camAnim.fromTarget, camAnim.toTarget, ease);
+        if (camAnim.t >= 1) camAnim = null;
+      }
       orbit.update();
       for (const rec of emitters) updateBeam(rec);
       composer.render();
